@@ -19,11 +19,12 @@ export const { config, configSave } = await makeConfig("WeixinOC", {
   api_timeout: 15000,  // API 超时(ms)
   // 账号配置 (扫码登录后会自动保存)
   accounts: [],  // { bot_id, token, account_id, user_id, nickname }
+  debug: false,
 }, {
   tips: [
     "欢迎使用 TRSS-Yunzai 微信个人号适配器插件!",
-    "参考 AstrBot 微信 ilink 协议实现",
     "使用 #微信登录 进行扫码登录",
+    "主页: https://github.com/AIGC-Yunzai/TRSS-WeChat-OC-Plugin",
   ],
 })
 
@@ -192,8 +193,10 @@ class WeixinClient {
     const paddedData = AESUtils.pkcs7Pad(fileBuffer)
     const encrypted = AESUtils.encrypt(paddedData, key)
 
-    logger.mark(`CDN上传: rawSize=${fileBuffer.length}, paddedSize=${paddedData.length}, encryptedSize=${encrypted.length}`)
-    logger.mark(`CDN上传: aesKeyHex=${aesKeyHex.slice(0, 16)}..., keyLength=${key.length}`)
+    if (config.debug) {
+      logger.mark(`CDN上传: rawSize=${fileBuffer.length}, paddedSize=${paddedData.length}, encryptedSize=${encrypted.length}`)
+      logger.mark(`CDN上传: aesKeyHex=${aesKeyHex.slice(0, 16)}..., keyLength=${key.length}`)
+    }
 
     const url = `${this.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(fileKey)}`
 
@@ -548,7 +551,8 @@ export const adapter = new class WeixinOCAdapter {
       base_info: { channel_version: "yunzai" },
     })
 
-    logger.mark("getUploadUrl 响应:", uploadUrlRes)
+    if (config.debug)
+      logger.mark("getUploadUrl 响应:", uploadUrlRes)
 
     const uploadParam = uploadUrlRes.upload_param
     if (!uploadParam) throw new Error(`Failed to get upload URL: ${JSON.stringify(uploadUrlRes)}`)
@@ -556,10 +560,12 @@ export const adapter = new class WeixinOCAdapter {
     // 上传文件
     const encryptedParam = await bot.client.uploadToCdn(uploadParam, fileKey, aesKeyHex, fileBuffer)
 
-    logger.mark("CDN 上传返回 encryptedParam:", encryptedParam?.slice(0, 50) + "...")
+    if (config.debug)
+      logger.mark("CDN 上传返回 encryptedParam:", encryptedParam?.slice(0, 50) + "...")
 
     const aesKeyB64 = Buffer.from(aesKeyHex, "utf8").toString("base64")
-    logger.mark(`aes_key base64: ${aesKeyB64.slice(0, 40)}..., length=${aesKeyB64.length}`)
+    if (config.debug)
+      logger.mark(`aes_key base64: ${aesKeyB64.slice(0, 40)}..., length=${aesKeyB64.length}`)
 
     return {
       media: {
@@ -702,20 +708,26 @@ export const adapter = new class WeixinOCAdapter {
 
     try {
       if (!itemList.length) {
-        logger.mark(`发送转发兼容消息: count=${normalizedForward.length}`)
+        if (config.debug)
+          logger.mark(`发送转发兼容消息: count=${normalizedForward.length}`)
         const forwardResult = await Bot.sendForwardMsg(msg => this.sendFriendMsg(data, msg), normalizedForward)
         return { data: { forwarded: true, results: forwardResult } }
       }
 
-      logger.mark("发送消息 itemList:", JSON.stringify(itemList, null, 2))
+      if (config.debug)
+        logger.mark("发送消息 itemList:", JSON.stringify(itemList, null, 2))
       const result = await Bot[botId].client.sendMessage(userId, itemList, contextToken)
-      logger.mark("发送消息结果:", result)
+      // 返回的 result = {} ，兼容云崽加个时间戳
+      result.time ??= Date.now();
+      if (config.debug)
+        logger.mark("发送消息结果:", result)
       if (normalizedForward.length) {
-        logger.mark(`发送转发兼容消息: count=${normalizedForward.length}`)
+        if (config.debug)
+          logger.mark(`发送转发兼容消息: count=${normalizedForward.length}`)
         const forwardResult = await Bot.sendForwardMsg(msg => this.sendFriendMsg(data, msg), normalizedForward)
         return { data: { message: result, forward: forwardResult } }
       }
-      return { data: result }
+      return result
     } catch (err) {
       Bot.makeLog("error", `发送消息失败: ${err.message}`, botId)
       return { error: err.message }
@@ -938,7 +950,8 @@ export const adapter = new class WeixinOCAdapter {
     let qrcodeData
     try {
       qrcodeData = await client.getQRCode()
-      logger.mark("二维码响应:", qrcodeData)
+      if (config.debug)
+        logger.mark("二维码响应:", qrcodeData)
     } catch (err) {
       e.reply(`获取二维码失败: ${err.message}`)
       return false
