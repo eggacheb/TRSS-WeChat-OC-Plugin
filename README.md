@@ -61,7 +61,6 @@ pnpm install -C plugins/TRSS-WeChat-OC-Plugin
 
 ```yaml
 tips: ""
-permission: master
 base_url: "https://ilinkai.weixin.qq.com"
 cdn_base_url: "https://novac2c.cdn.weixin.qq.com/c2c"
 bot_type: "3"
@@ -70,9 +69,6 @@ long_poll_timeout: 35000
 api_timeout: 15000
 accounts: []
 ```
-
-- `accounts` 字段由插件自动维护，无需手动修改
-- `permission` 控制指令权限，默认仅主人可用
 
 ## 安全提示
 
