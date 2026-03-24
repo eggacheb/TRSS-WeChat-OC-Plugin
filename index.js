@@ -28,7 +28,7 @@ const { config, configSave } = await makeConfig("WeixinOC", {
   long_poll_timeout: 35000,  // 长轮询超时(ms)
   api_timeout: 15000,  // API 超时(ms)
   // 账号配置 (扫码登录后会自动保存)
-  accounts: [],  // { token, account_id, user_id, nickname }
+  accounts: [],  // { bot_id, token, account_id, user_id, nickname }
 }, {
   tips: [
     "欢迎使用 TRSS-Yunzai 微信个人号适配器插件!",
@@ -254,6 +254,25 @@ const adapter = new class WeixinOCAdapter {
     this._messageCache = new Map()
     // 防止重复加载
     this._loaded = false
+  }
+
+  /**
+   * 生成新的 weixin_personal_XXX ID
+   */
+  _getNextBotId() {
+    let num = 1
+    while (true) {
+      const id = `weixin_personal_${String(num).padStart(3, "0")}`
+      // 检查配置中是否已存在
+      const inConfig = config.accounts?.some(a => a.bot_id === id)
+      // 检查 Bot 对象中是否已存在
+      const inBot = !!Bot[id]
+
+      if (!inConfig && !inBot) {
+        return id
+      }
+      num++
+    }
   }
 
   /**
@@ -755,7 +774,7 @@ const adapter = new class WeixinOCAdapter {
         if (result.get_updates_buf) {
           this.syncBuffers.set(botId, result.get_updates_buf)
           // 防抖保存配置，避免频繁磁盘写入
-          const account = config.accounts.find(a => a.user_id === bot.info.user_id)
+          const account = config.accounts.find(a => a.bot_id === botId)
           if (account) {
             account.sync_buf = result.get_updates_buf
             this.configSaveDebounced(account.user_id)
@@ -815,17 +834,17 @@ const adapter = new class WeixinOCAdapter {
 
   // 创建 Bot 实例
   async createBot(accountConfig, client) {
-    const id = `wx_${accountConfig.user_id}`
+    const id = accountConfig.bot_id
 
     Bot[id] = {
       adapter: this,
       client: client,
 
       info: {
-        user_id: accountConfig.user_id,
+        user_id: accountConfig.user_id, // 记录真实的微信 ID 供内部逻辑参考
         nickname: accountConfig.nickname || accountConfig.user_id,
       },
-      uin: accountConfig.user_id,
+      uin: id, // 使用 weixin_personal_XXX 作为系统识别 Uin，防止和用户 uid 撞车
       get nickname() { return this.info.nickname },
       version: {
         id: this.id,
@@ -838,7 +857,7 @@ const adapter = new class WeixinOCAdapter {
       get pickUser() { return this.pickFriend },
 
       fl: new Map(),
-      gl: new Map(),
+      gl: new Map(),  // 微信个人号没有群组
       gml: new Map(),
 
       _stop: false,
@@ -863,8 +882,16 @@ const adapter = new class WeixinOCAdapter {
     if (this._loaded) return
     this._loaded = true
 
+    let needSave = false
+
     for (const account of config.accounts || []) {
-      const botId = `wx_${account.user_id}`
+      // 兼容旧配置：如果没有 bot_id，为其分配一个并保存
+      if (!account.bot_id) {
+        account.bot_id = this._getNextBotId()
+        needSave = true
+      }
+
+      const botId = account.bot_id
       // 跳过已连接的账号
       if (Bot[botId] && !Bot[botId]._stop) {
         Bot.makeLog("info", `微信账号已在连接中: ${account.nickname || account.user_id}`, "WeixinOC")
@@ -875,11 +902,14 @@ const adapter = new class WeixinOCAdapter {
         await Bot.sleep(2000, this.connect(account))
       }
     }
+
+    if (needSave) {
+      await configSave()
+    }
   }
 
   // 销毁 Bot 实例并清理资源
-  async destroyBot(userId) {
-    const botId = `wx_${userId}`
+  async destroyBot(botId) {
     if (Bot[botId]) {
       Bot[botId]._stop = true
       await Bot.sleep(1000)  // 等待轮询退出
@@ -891,7 +921,7 @@ const adapter = new class WeixinOCAdapter {
       delete Bot.bots[botId]
       delete Bot[botId]
 
-      Bot.makeLog("mark", `${this.name} 已断开: ${userId}`, botId)
+      Bot.makeLog("mark", `${this.name} 已断开: ${botId}`, botId)
     }
   }
 
@@ -950,37 +980,43 @@ const adapter = new class WeixinOCAdapter {
 
         if (status.status === "confirmed") {
           // 登录成功
-          const accountConfig = {
-            token: status.bot_token,
-            account_id: status.ilink_bot_id,
-            user_id: status.ilink_user_id,
-            nickname: status.nickname || status.ilink_user_id,
-            sync_buf: "",
-          }
+          const existing = config.accounts.find(a => a.user_id === status.ilink_user_id)
+          let botId
 
-          // 检查是否已存在
-          const existing = config.accounts.find(a => a.user_id === accountConfig.user_id)
           if (existing) {
-            existing.token = accountConfig.token
-            existing.account_id = accountConfig.account_id
-            existing.nickname = accountConfig.nickname
+            existing.token = status.bot_token
+            existing.account_id = status.ilink_bot_id
+            existing.nickname = status.nickname || status.ilink_user_id
+            if (!existing.bot_id) existing.bot_id = this._getNextBotId()
+            botId = existing.bot_id
           } else {
+            botId = this._getNextBotId()
+            const accountConfig = {
+              bot_id: botId,
+              token: status.bot_token,
+              account_id: status.ilink_bot_id,
+              user_id: status.ilink_user_id,
+              nickname: status.nickname || status.ilink_user_id,
+              sync_buf: "",
+            }
             config.accounts.push(accountConfig)
           }
 
           await configSave()
 
+          const currentAccount = config.accounts.find(a => a.user_id === status.ilink_user_id)
+
           // 创建 bot
-          const result = await this.createBot(accountConfig, new WeixinClient({
-            id: `wx_${accountConfig.user_id}`,
+          const result = await this.createBot(currentAccount, new WeixinClient({
+            id: currentAccount.bot_id,
             baseUrl: status.baseurl || config.base_url,
             cdnBaseUrl: config.cdn_base_url,
             apiTimeout: config.api_timeout,
-            token: accountConfig.token,
+            token: currentAccount.token,
           }))
 
           if (result.success) {
-            e.reply(`微信登录成功: ${accountConfig.nickname} (${accountConfig.user_id})`)
+            e.reply(`微信登录成功: ${currentAccount.nickname} (${currentAccount.bot_id})`)
           }
           return true
 
@@ -1049,10 +1085,10 @@ export class WeixinOC extends plugin {
       return
     }
 
-    const list = accounts.map((a, i) => `${i + 1}. ${a.nickname || a.user_id} (${a.user_id})`).join("\n")
+    const list = accounts.map((a, i) => `${i + 1}. ${a.nickname || a.user_id} (${a.bot_id})`).join("\n")
     const online = []
     for (const [id, bot] of adapter.bots) {
-      if (!bot._stop) online.push(bot.info.nickname || bot.info.user_id)
+      if (!bot._stop) online.push(`${bot.info.nickname || bot.info.user_id} (${id})`)
     }
 
     this.reply(`已保存 ${accounts.length} 个账号:\n${list}\n\n在线: ${online.join(", ") || "无"}`, true)
@@ -1073,17 +1109,17 @@ export class WeixinOC extends plugin {
 
     if (!isNaN(index) && index >= 0 && index < config.accounts.length) {
       const removed = config.accounts.splice(index, 1)[0]
-      await adapter.destroyBot(removed.user_id)
+      await adapter.destroyBot(removed.bot_id)
       await configSave()
       this.reply(`已删除账号: ${removed.nickname || removed.user_id}`, true)
       return
     }
 
-    // 尝试匹配 user_id 或 nickname
-    const found = config.accounts.findIndex(a => a.user_id === input || a.nickname === input)
+    // 尝试匹配 user_id, bot_id 或 nickname
+    const found = config.accounts.findIndex(a => a.user_id === input || a.nickname === input || a.bot_id === input)
     if (found >= 0) {
       const removed = config.accounts.splice(found, 1)[0]
-      await adapter.destroyBot(removed.user_id)
+      await adapter.destroyBot(removed.bot_id)
       await configSave()
       this.reply(`已删除账号: ${removed.nickname || removed.user_id}`, true)
       return
