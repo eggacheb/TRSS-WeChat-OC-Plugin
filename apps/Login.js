@@ -1,4 +1,5 @@
 import plugin from '../../../lib/plugins/plugin.js'
+import common from '../../../lib/common/common.js';
 
 export class WeixinOC extends plugin {
     constructor() {
@@ -8,17 +9,17 @@ export class WeixinOC extends plugin {
             event: "message",
             rule: [
                 {
-                    reg: "^#微信(登录|扫码)$",
+                    reg: "^#微信(个人号)?(登录|扫码)$",
                     fnc: "Login",
                     permission: 'master'
                 },
                 {
-                    reg: "^#微信(账号|列表)$",
+                    reg: "^#微信(个人号)?(账号|列表)$",
                     fnc: "List",
                     permission: 'master'
                 },
                 {
-                    reg: "^#微信(删除|移除).+$",
+                    reg: "^#微信(个人号)?(删除|移除).+$",
                     fnc: "Remove",
                     permission: 'master'
                 },
@@ -41,19 +42,19 @@ export class WeixinOC extends plugin {
             return
         }
 
-        const list = accounts.map((a, i) => `${i + 1}. ${a.nickname || a.user_id} (${a.bot_id})`).join("\n")
+        const list = accounts.map((a, i) => `${i + 1}. ${a.nickname || a.user_id}\n e.user_id: wx_${a.user_id}\n Bot.uin: ${a.bot_id}`)
         const online = []
         for (const [id, bot] of adapter.bots) {
-            if (!bot._stop) online.push(`${bot.info.nickname || bot.info.user_id} (${id})`)
+            if (!bot._stop) online.push(`${bot.info.nickname || bot.info.user_id} \n e.user_id: wx_${bot.info.user_id}\n Bot.uin: ${id}`)
         }
 
-        this.reply(`已保存 ${accounts.length} 个账号:\n${list}\n\n在线: ${online.join(", ") || "无"}`, true)
+        this.e.reply(await common.makeForwardMsg(this.e, ["已保存的账号：", ...list, "已登录的账号：", ...online,"可用指令：\n #微信登录\n #微信删除[序号]\n #微信列表"], this.e.msg));
     }
 
     // 删除账号
     async Remove() {
         const { adapter, config, configSave, } = await import('../index.js')
-        const input = this.e.msg.replace(/^#微信(删除|移除)/, "").trim()
+        const input = this.e.msg.replace(/^#微信(个人号)?(删除|移除)/, "").trim()
 
         // 先立即保存任何待保存的配置
         if (adapter._saveTimer) {

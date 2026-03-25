@@ -1,6 +1,6 @@
 # TRSS-WeChat-OC-Plugin
 
-Yunzai-Bot / TRSS-Yunzai 的微信个人号适配器插件，基于 ilink 协议实现，接入微信ClawBot接口。
+这是 TRSS-Yunzai 的微信个人号适配器插件，基于官方 ilink 协议，直接接入[微信 ClawBot 官方接口](https://cloud.tencent.cn/developer/article/2643772)，实现微信与 Yunzai 生态的合规、稳定消息互通。
 
 ## 功能
 
@@ -54,6 +54,7 @@ pnpm install -C plugins/TRSS-WeChat-OC-Plugin
 | `#微信删除 <序号/user_id/昵称>` | 删除指定账号       |
 | `#设置主人`                     | 在微信中设置主人   |
 | `#设置主人验证码`               | 其他主人查看验证码 |
+| `#微信个人号插件更新`           | 更新插件           |
 
 ## 配置
 

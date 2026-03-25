@@ -1029,7 +1029,7 @@ export const adapter = new class WeixinOCAdapter {
           }))
 
           if (result.success) {
-            e.reply(`微信登录成功: ${currentAccount.nickname} (${currentAccount.bot_id})`)
+            e.reply(`微信登录成功:\n e.nickname: ${currentAccount.nickname}\n e.user_id: wx_${currentAccount.user_id}\n Bot.uin: ${currentAccount.bot_id}\n\n可用指令:\n #微信列表`)
           }
           return true
 
