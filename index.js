@@ -293,7 +293,7 @@ export const adapter = new class WeixinOCAdapter {
 
     try {
       bytes = Buffer.from(base64, "base64").length
-    } catch {}
+    } catch { }
 
     return `base64://${preview}... [bytes=${bytes}]`
   }
@@ -400,7 +400,11 @@ export const adapter = new class WeixinOCAdapter {
       seq: messageId,
     }
 
-    if (img.length) source.img = img
+    if (img && img.length > 0) {
+      source.img = img
+    } else {
+      delete source.img
+    }
 
     return source
   }
@@ -500,7 +504,7 @@ export const adapter = new class WeixinOCAdapter {
       }
 
       if ([16, 24, 32].includes(decoded.length)) return decoded
-    } catch {}
+    } catch { }
 
     return null
   }
@@ -755,8 +759,19 @@ export const adapter = new class WeixinOCAdapter {
       original_raw_message: raw_message,
     }
 
+    // 注入 getReply 函数，完美兼容你的代码 e.getReply(e.reply_id)
+    data.getReply = async (replyId = data.reply_id) => {
+      if (!replyId) return null;
+      return this._getCachedMessage(botId, replyId);
+    };
+
+    // 判断如果 img.length 为 0，则删掉 e.img
     const img = this._extractImageUrls(message)
-    if (img.length) data.img = img
+    if (img && img.length > 0) {
+      data.img = img
+    } else {
+      delete data.img
+    }
 
     this._cacheMessage(botId, data)
 
@@ -1177,10 +1192,10 @@ export const adapter = new class WeixinOCAdapter {
       client: client,
 
       info: {
-        user_id: accountConfig.user_id, // 记录真实的微信 ID 供内部逻辑参考
+        user_id: accountConfig.user_id,
         nickname: accountConfig.nickname || accountConfig.user_id,
       },
-      uin: id, // 使用 weixin_personal_XXX 作为系统识别 Uin，防止和用户 uid 撞车
+      uin: id,
       get nickname() { return this.info.nickname },
       version: {
         id: this.id,
@@ -1192,8 +1207,11 @@ export const adapter = new class WeixinOCAdapter {
       pickFriend: (user_id) => this.pickFriend({ self_id: id }, user_id),
       get pickUser() { return this.pickFriend },
 
+      // 新增：注册全局的 getMsg 方法供插件调用
+      getMsg: async (message_id) => this.getMsg({ self_id: id }, message_id),
+
       fl: new Map(),
-      gl: new Map(),  // 微信个人号没有群组
+      gl: new Map(),
       gml: new Map(),
 
       _stop: false,
