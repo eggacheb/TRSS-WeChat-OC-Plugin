@@ -343,8 +343,8 @@ export const adapter = new class WeixinOCAdapter {
 
   _extractImageUrls(message = []) {
     return message
-      .filter(item => item?.type === "image" && item?.url)
-      .map(item => item.url)
+      .filter(item => item?.type === "image" && (item?.url || item?.file))
+      .map(item => item.url || item.file)
   }
 
   _extractQuotedMeta(msg, itemList = []) {
@@ -578,7 +578,9 @@ export const adapter = new class WeixinOCAdapter {
         imageSet.add(imageKey)
         const imageBuffer = await this._decodeInboundImage(botId, item)
         if (imageBuffer) {
-          quoteMessage.push(segment.image(`base64://${imageBuffer.toString("base64")}`))
+          const b64 = `base64://${imageBuffer.toString("base64")}`
+          // 同时赋予 file 和 url，兼容旧版云崽和所有插件规范
+          quoteMessage.push({ type: "image", file: b64, url: b64 })
         } else {
           quoteMessage.push({ type: "text", text: "[引用图片]" })
         }
@@ -623,7 +625,14 @@ export const adapter = new class WeixinOCAdapter {
         if (!videoKey || mediaSet.has(videoKey)) continue
 
         mediaSet.add(videoKey)
-        quoteMessage.push({ type: "video", url: videoKey })
+        // 补充 file、file_name 和 file_size 满足插件取值需求
+        quoteMessage.push({
+          type: "video",
+          url: videoKey,
+          file: videoKey,
+          file_name: "video.mp4",
+          file_size: item.video_item?.video_size || 0
+        })
         quoteRawParts.push("[quoted video]")
       }
     }
