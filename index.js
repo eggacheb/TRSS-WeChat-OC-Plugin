@@ -323,12 +323,15 @@ export const adapter = new class WeixinOCAdapter {
   _cacheMessage(botId, message) {
     if (!message?.message_id) return
 
-    this._messageStore.set(`${botId}:${message.message_id}`, message)
-    if (this._messageStore.size > 1000) {
-      const keys = Array.from(this._messageStore.keys())
-      for (const key of keys.slice(0, keys.length - 500)) {
-        this._messageStore.delete(key)
-      }
+    const key = `${botId}:${message.message_id}`;
+    // 先删除再设置，利用 Map 保持插入顺序为最新的特性
+    this._messageStore.delete(key);
+    this._messageStore.set(key, message);
+
+    // 因引入 base64，限制缓存大小至 100 条
+    while (this._messageStore.size > 100) {
+      const oldestKey = this._messageStore.keys().next().value;
+      this._messageStore.delete(oldestKey);
     }
   }
 
@@ -510,21 +513,24 @@ export const adapter = new class WeixinOCAdapter {
     return null
   }
 
-  async _decodeInboundImage(botId, item) {
+  /**
+   * 下载并解密微信 CDN 媒体文件（通用版，支持图片/视频/语音等）
+   */
+  async _decodeInboundMedia(botId, item, itemKey = "image_item") {
     const bot = Bot[botId]
-    const imageItem = item?.image_item || {}
-    const media = imageItem.media || {}
+    const specificItem = item?.[itemKey] || {}
+    const media = specificItem.media || {}
     const encryptedQueryParam = media.encrypt_query_param
     if (!bot?.client || !encryptedQueryParam) return null
 
-    const aesKey = this._decodeMediaAesKey(imageItem.aeskey || media.aes_key)
+    const aesKey = this._decodeMediaAesKey(specificItem.aeskey || media.aes_key)
 
     try {
       const encryptedBuffer = await bot.client.downloadFromCdn(encryptedQueryParam)
       if (!aesKey) return encryptedBuffer
       return AESUtils.decrypt(encryptedBuffer, aesKey)
     } catch (err) {
-      logger.error("下载引用图片失败:", err)
+      logger.error(`下载引用媒体 (${itemKey}) 失败:`, err)
       return null
     }
   }
@@ -577,7 +583,7 @@ export const adapter = new class WeixinOCAdapter {
         if (!imageKey || imageSet.has(imageKey)) continue
 
         imageSet.add(imageKey)
-        const imageBuffer = await this._decodeInboundImage(botId, item)
+        const imageBuffer = await this._decodeInboundMedia(botId, item, "image_item")
         if (imageBuffer) {
           const b64 = `base64://${imageBuffer.toString("base64")}`
           // 同时赋予 file 和 url，兼容旧版云崽和所有插件规范
@@ -626,14 +632,20 @@ export const adapter = new class WeixinOCAdapter {
         if (!videoKey || mediaSet.has(videoKey)) continue
 
         mediaSet.add(videoKey)
-        // 补充 file、file_name 和 file_size 满足插件取值需求
-        quoteMessage.push({
-          type: "video",
-          url: videoKey,
-          file: videoKey,
-          file_name: "video.mp4",
-          file_size: item.video_item?.video_size || 0
-        })
+        const videoBuffer = await this._decodeInboundMedia(botId, item, "video_item")
+        if (videoBuffer) {
+          const b64 = `base64://${videoBuffer.toString("base64")}`
+          // 补充 file、file_name 和 file_size 满足插件取值需求，统一输出 Base64
+          quoteMessage.push({
+            type: "video",
+            url: b64,
+            file: b64,
+            file_name: "video.mp4",
+            file_size: item.video_item?.video_size || videoBuffer.length
+          })
+        } else {
+          quoteMessage.push({ type: "text", text: "[引用视频加载失败]" })
+        }
         quoteRawParts.push("[quoted video]")
       }
     }
@@ -666,7 +678,7 @@ export const adapter = new class WeixinOCAdapter {
 
         case 2: // 图片
           // 异步下载并解密图片为 Buffer
-          const imageBuffer = await this._decodeInboundImage(botId, item)
+          const imageBuffer = await this._decodeInboundMedia(botId, item, "image_item")
           if (imageBuffer) {
             const b64 = `base64://${imageBuffer.toString("base64")}`
             // 同时赋予 file 和 url 满足所有云崽插件的需求
@@ -698,7 +710,14 @@ export const adapter = new class WeixinOCAdapter {
           break
 
         case 5: // 视频
-          message.push({ type: "video", url: item.video_item?.media?.encrypt_query_param })
+          // 异步下载并解密视频为 Buffer 进而输出 Base64
+          const videoBuffer = await this._decodeInboundMedia(botId, item, "video_item")
+          if (videoBuffer) {
+            const b64 = `base64://${videoBuffer.toString("base64")}`
+            message.push({ type: "video", url: b64, file: b64 })
+          } else {
+            message.push({ type: "text", text: "[视频加载失败]" })
+          }
           rawMessage.push("[视频]")
           break
 
@@ -721,13 +740,11 @@ export const adapter = new class WeixinOCAdapter {
     if (this._messageCache.has(dedupKey)) {
       return  // 重复消息，忽略
     }
-    // 缓存消息 ID，限制缓存大小
+    // 【内存优化】O(1) 限制去重缓存容量
     this._messageCache.set(dedupKey, Date.now())
-    if (this._messageCache.size > 1000) {
-      // 清理旧缓存（保留最近500条）
-      const entries = Array.from(this._messageCache.entries())
-      this._messageCache.clear()
-      entries.slice(-500).forEach(([k, v]) => this._messageCache.set(k, v))
+    while (this._messageCache.size > 500) {
+      const oldestKey = this._messageCache.keys().next().value;
+      this._messageCache.delete(oldestKey);
     }
 
     // 增加 await 和 botId 传参
@@ -739,11 +756,17 @@ export const adapter = new class WeixinOCAdapter {
       this._cacheMessage(botId, quotedSource)
     }
 
-
     // 保存上下文 token (用于回复)
     const contextToken = msg.context_token
     if (contextToken) {
-      this.contextTokens.set(`${botId}:${fromUserId}`, contextToken)
+      const ctKey = `${botId}:${fromUserId}`
+      // 先删后设以维护插入顺序
+      this.contextTokens.delete(ctKey);
+      this.contextTokens.set(ctKey, contextToken);
+      // 【内存优化】限制回复凭证数量，防止内存泄漏
+      while (this.contextTokens.size > 500) {
+        this.contextTokens.delete(this.contextTokens.keys().next().value);
+      }
     }
 
     const data = {
