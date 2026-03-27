@@ -328,8 +328,8 @@ export const adapter = new class WeixinOCAdapter {
     this._messageStore.delete(key);
     this._messageStore.set(key, message);
 
-    // 因引入 base64，限制缓存大小至 100 条
-    while (this._messageStore.size > 100) {
+    // 因引入 base64，限制缓存大小至 1 条
+    while (this._messageStore.size > 2) {
       const oldestKey = this._messageStore.keys().next().value;
       this._messageStore.delete(oldestKey);
     }
@@ -587,7 +587,7 @@ export const adapter = new class WeixinOCAdapter {
         if (imageBuffer) {
           const b64 = `base64://${imageBuffer.toString("base64")}`
           // 同时赋予 file 和 url，兼容旧版云崽和所有插件规范
-          quoteMessage.push({ type: "image", file: b64, url: b64 })
+          quoteMessage.push({ type: "image", url: b64 })
         } else {
           quoteMessage.push({ type: "text", text: "[引用图片]" })
         }
@@ -635,11 +635,10 @@ export const adapter = new class WeixinOCAdapter {
         const videoBuffer = await this._decodeInboundMedia(botId, item, "video_item")
         if (videoBuffer) {
           const b64 = `base64://${videoBuffer.toString("base64")}`
-          // 补充 file、file_name 和 file_size 满足插件取值需求，统一输出 Base64
           quoteMessage.push({
             type: "video",
             url: b64,
-            file: b64,
+            file: "video.mp4",
             file_name: "video.mp4",
             file_size: item.video_item?.video_size || videoBuffer.length
           })
@@ -682,7 +681,7 @@ export const adapter = new class WeixinOCAdapter {
           if (imageBuffer) {
             const b64 = `base64://${imageBuffer.toString("base64")}`
             // 同时赋予 file 和 url 满足所有云崽插件的需求
-            message.push({ type: "image", url: b64, file: b64 })
+            message.push({ type: "image", url: b64 })
           } else {
             message.push({ type: "text", text: "[图片加载失败]" })
           }
@@ -714,7 +713,14 @@ export const adapter = new class WeixinOCAdapter {
           const videoBuffer = await this._decodeInboundMedia(botId, item, "video_item")
           if (videoBuffer) {
             const b64 = `base64://${videoBuffer.toString("base64")}`
-            message.push({ type: "video", url: b64, file: b64 })
+            // 修复：补全缺失的 file_size 和 file_name，将 file 设为正常文件名以防止插件崩溃
+            message.push({
+              type: "video",
+              url: b64,
+              file: "video.mp4",
+              file_name: "video.mp4",
+              file_size: item.video_item?.video_size || videoBuffer.length
+            })
           } else {
             message.push({ type: "text", text: "[视频加载失败]" })
           }
