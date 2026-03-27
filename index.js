@@ -245,6 +245,7 @@ export const adapter = new class WeixinOCAdapter {
     this._pendingSave = new Set()
     // 消息去重缓存
     this._messageCache = new Map()
+    /** Map<botId, Map<msgId, message>> */
     this._messageStore = new Map()
     // 防止重复加载
     this._loaded = false
@@ -322,22 +323,27 @@ export const adapter = new class WeixinOCAdapter {
 
   _cacheMessage(botId, message) {
     if (!message?.message_id) return
+    if (!this._messageStore.has(botId)) {
+      this._messageStore.set(botId, new Map())
+    }
+    const botCache = this._messageStore.get(botId)
+    const key = message.message_id
 
-    const key = `${botId}:${message.message_id}`;
     // 先删除再设置，利用 Map 保持插入顺序为最新的特性
-    this._messageStore.delete(key);
-    this._messageStore.set(key, message);
+    botCache.delete(key)
+    botCache.set(key, message)
 
-    // 因引入 base64，限制缓存大小至 1 条
-    while (this._messageStore.size > 2) {
-      const oldestKey = this._messageStore.keys().next().value;
-      this._messageStore.delete(oldestKey);
+    // 单个 Bot 限制缓存数
+    while (botCache.size > 2) {
+      const oldest = botCache.keys().next().value
+      botCache.delete(oldest)
     }
   }
 
   _getCachedMessage(botId, messageId) {
     if (!messageId) return null
-    return this._messageStore.get(`${botId}:${String(messageId)}`) || null
+    const botCache = this._messageStore.get(botId)
+    return botCache?.get(messageId) || null
   }
 
   _makeQuoteMessageId(botId, messageId) {
