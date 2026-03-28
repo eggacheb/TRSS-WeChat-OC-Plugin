@@ -199,7 +199,7 @@ class WeixinClient {
   }
 
   // 上传文件到 CDN
-  async uploadToCdn(uploadParam, fileKey, aesKeyHex, fileBuffer) {
+  async uploadToCdn(uploadFullUrl, uploadParam, fileKey, aesKeyHex, fileBuffer) {
     const key = Buffer.from(aesKeyHex, "hex")
     const paddedData = AESUtils.pkcs7Pad(fileBuffer)
     const encrypted = AESUtils.encrypt(paddedData, key)
@@ -209,7 +209,14 @@ class WeixinClient {
       logger.mark(`CDN上传: aesKeyHex=${aesKeyHex.slice(0, 16)}..., keyLength=${key.length}`)
     }
 
-    const url = `${this.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(fileKey)}`
+    let url
+    if (uploadFullUrl) {
+      url = uploadFullUrl
+    } else if (uploadParam) {
+      url = `${this.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(fileKey)}`
+    } else {
+      throw new Error("CDN upload URL missing (need upload_full_url or upload_param)")
+    }
 
     const response = await fetch(url, {
       method: "POST",
@@ -421,6 +428,11 @@ export const adapter = new class WeixinOCAdapter {
   // 生成消息 ID
   _makeMessageId() {
     return `${Date.now()}${Math.floor(Math.random() * 1000)}`
+  }
+
+  // 生成引用消息 ID
+  _makeQuoteMessageId(botId, messageId) {
+    return `${botId || 'bot'}_quote_${messageId}`
   }
 
   _normalizeForwardEntries(entries, rawMessage = "") {
@@ -903,10 +915,10 @@ export const adapter = new class WeixinOCAdapter {
       logger.mark("getUploadUrl 响应:", uploadUrlRes)
 
     const uploadParam = uploadUrlRes.upload_param
-    if (!uploadParam) throw new Error(`Failed to get upload URL: ${this.makeLog(JSON.stringify(uploadUrlRes))}`)
+    const uploadFullUrl = uploadUrlRes.upload_full_url
 
     // 上传文件
-    const encryptedParam = await bot.client.uploadToCdn(uploadParam, fileKey, aesKeyHex, fileBuffer)
+    const encryptedParam = await bot.client.uploadToCdn(uploadFullUrl, uploadParam, fileKey, aesKeyHex, fileBuffer)
 
     if (config.debug)
       logger.mark("CDN 上传返回 encryptedParam:", encryptedParam?.slice(0, 50) + "...")
