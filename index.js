@@ -23,7 +23,7 @@ export const { config, configSave } = await makeConfig("WeixinOC", {
 }, {
   tips: [
     "欢迎使用 TRSS-Yunzai 微信个人号适配器插件!",
-    "使用 #微信登录 进行扫码登录",
+    "使用 #微信个人号登录 进行扫码登录",
     "主页: https://github.com/AIGC-Yunzai/TRSS-WeChat-OC-Plugin",
   ],
 })
@@ -364,11 +364,16 @@ export const adapter = new class WeixinOCAdapter {
       const senderId = refMsg.from_user_id || refMsg.user_id || refMsg.sender_user_id || refMsg.sender_id || refMsg.sender?.user_id
       const senderName = refMsg.from_user_name || refMsg.user_name || refMsg.nickname || refMsg.sender_name || refMsg.sender?.nickname || refMsg.sender?.card
       const messageId = refMsg.message_id || refMsg.msg_id || refMsg.client_id
+
+      const botId = msg.bot_id || ""
+      const account = config.accounts.find(a => a.bot_id === botId)
+      const fallbackNickname = account?.nickname || senderId
+
       return {
-        message_id: messageId || this._makeQuoteMessageId(msg.bot_id || "", msg.message_id || msg.msg_id || this._makeMessageId()),
+        message_id: messageId || this._makeQuoteMessageId(botId, msg.message_id || msg.msg_id || this._makeMessageId()),
         sender: senderId ? {
           user_id: String(senderId).startsWith("wx_") ? String(senderId) : `wx_${senderId}`,
-          nickname: senderName || senderId,
+          nickname: senderName || fallbackNickname,
         } : null,
       }
     }
@@ -377,11 +382,15 @@ export const adapter = new class WeixinOCAdapter {
 
   _buildQuotedSource(botId, msg, quote) {
     if (!quote?.has_quote && !quote?.meta) return null
+
+    const account = config.accounts.find(a => a.bot_id === botId)
+    const fallbackNickname = account?.nickname || msg.from_user_id
+
     const quotedMeta = quote.meta || {}
     const fromUserId = msg.from_user_id
     const sender = quotedMeta.sender || {
       user_id: `wx_${fromUserId}`,
-      nickname: msg.from_user_name || fromUserId,
+      nickname: msg.from_user_name || fallbackNickname,
     }
     const messageId = quotedMeta.message_id || this._makeQuoteMessageId(botId, msg.message_id || msg.msg_id || this._makeMessageId())
     const quoteMessage = Array.isArray(quote?.message) ? quote.message : []
@@ -749,19 +758,17 @@ export const adapter = new class WeixinOCAdapter {
     const contextToken = msg.context_token
     if (contextToken) {
       const account = config.accounts.find(a => a.bot_id === botId)
-      if (account) {
-        if (!account.context_tokens) account.context_tokens = {}
-        if (account.context_tokens[fromUserId] !== contextToken) {
-          delete account.context_tokens[fromUserId]
-          account.context_tokens[fromUserId] = contextToken
+      if (account && account.context_token !== contextToken) {
+        account.context_token = contextToken
+        // 为了保持配置文件干净，如果有旧的 context_tokens 对象，顺手删掉 // TODO: 下个月删除此代码
+        if (account.context_tokens) delete account.context_tokens
 
-          // 限制凭证数量 // 如果 Bot 能够一对多回复的话才有用，现在1个Wechat只能1个Bot
-          const keys = Object.keys(account.context_tokens)
-          if (keys.length > 100) delete account.context_tokens[keys[0]]
-          this.configSaveDebounced(account.user_id)
-        }
+        this.configSaveDebounced(account.user_id)
       }
     }
+
+    const accountInfo = config.accounts.find(a => a.bot_id === botId)
+    const fallbackNickname = accountInfo?.nickname || fromUserId
 
     const data = {
       bot: Bot[botId],
@@ -772,7 +779,7 @@ export const adapter = new class WeixinOCAdapter {
       user_id: `wx_${fromUserId}`,
       sender: {
         user_id: `wx_${fromUserId}`,
-        nickname: msg.from_user_name || fromUserId,
+        nickname: msg.from_user_name || fallbackNickname,
       },
       message_id: messageId,
       message: quotedSource
@@ -1070,7 +1077,7 @@ export const adapter = new class WeixinOCAdapter {
 
     // 从 config 对象中读取对应的 contextToken
     const account = config.accounts.find(a => a.bot_id === botId)
-    const contextToken = account?.context_tokens?.[userId]
+    const contextToken = account?.context_token
     if (!contextToken) {
       Bot.makeLog("error", "缺少上下文 contextToken ，无法发送消息。请先让对方给你发一条消息。", botId)
       return { error: "缺少上下文 contextToken ，无法发送消息。请先让对方给你发一条消息。" }
@@ -1132,9 +1139,11 @@ export const adapter = new class WeixinOCAdapter {
   // 获取好友信息
   async getFriendInfo(data) {
     // 微信 ilink 协议没有直接获取用户信息接口
+    const account = config.accounts.find(a => a.bot_id === data.self_id)
+    const fallbackNickname = account?.nickname || data.user_id
     return {
       user_id: data.user_id,
-      nickname: data.sender?.nickname || data.user_id,
+      nickname: data.sender?.nickname || fallbackNickname,
     }
   }
 
@@ -1409,7 +1418,7 @@ export const adapter = new class WeixinOCAdapter {
           }))
 
           if (result.success) {
-            e.reply(`微信登录成功:\n e.nickname: ${currentAccount.nickname}\n e.user_id: wx_${currentAccount.user_id}\n Bot.uin: ${currentAccount.bot_id}\n\n可用指令:\n #微信列表`)
+            e.reply(`微信登录成功:\n e.nickname: ${currentAccount.nickname}\n e.user_id: wx_${currentAccount.user_id}\n Bot.uin: ${currentAccount.bot_id}\n\n可用指令:\n #微信个人号列表`)
           }
           return true
 
