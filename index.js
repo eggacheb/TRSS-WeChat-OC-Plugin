@@ -311,29 +311,36 @@ export const adapter = new class WeixinOCAdapter {
     return JSON.stringify(this._sanitizeDebugValue(value), null, 2)
   }
 
+  /** 缓存引用消息和Bot接收的消息，主要用于 e.getReply 方法调用；缓存的多媒体对象5分钟后自动删除 */
   _cacheMessage(botId, message) {
     if (!message?.message_id) return
     if (!this._messageStore.has(botId)) this._messageStore.set(botId, new Map())
     const botCache = this._messageStore.get(botId)
     const key = message.message_id
-
-    // 先删除再设置，利用 Map 保持插入顺序为最新的特性
-    botCache.delete(key)
-    botCache.set(key, message)
+    // 如果有重复的消息进来，先清理旧的定时器防止内存泄漏
+    if (botCache.has(key)) {
+      clearTimeout(botCache.get(key).timer)
+      botCache.delete(key)
+    }
+    // 设置 5 分钟后自动删除的定时器
+    const timer = setTimeout(() => {
+      botCache.delete(key)
+    }, 5 * 60 * 1000)
+    botCache.set(key, { message, timer })
 
     // 单个 Bot 限制缓存数
     while (botCache.size > 2) {
-      botCache.delete(botCache.keys().next().value)
+      const oldestKey = botCache.keys().next().value
+      // 挤出缓存前把对应的定时器销毁
+      clearTimeout(botCache.get(oldestKey).timer)
+      botCache.delete(oldestKey)
     }
   }
 
   _getCachedMessage(botId, messageId) {
     if (!messageId) return null
-    return this._messageStore.get(botId)?.get(messageId) || null
-  }
-
-  _makeQuoteMessageId(botId, messageId) {
-    return `quote:${botId}:${messageId}`
+    const cached = this._messageStore.get(botId)?.get(messageId)
+    return cached ? cached.message : null
   }
 
   _extractImageUrls(message = []) {
@@ -896,7 +903,7 @@ export const adapter = new class WeixinOCAdapter {
       logger.mark("getUploadUrl 响应:", uploadUrlRes)
 
     const uploadParam = uploadUrlRes.upload_param
-    if (!uploadParam) throw new Error(`Failed to get upload URL: ${JSON.stringify(uploadUrlRes)}`)
+    if (!uploadParam) throw new Error(`Failed to get upload URL: ${this.makeLog(JSON.stringify(uploadUrlRes))}`)
 
     // 上传文件
     const encryptedParam = await bot.client.uploadToCdn(uploadParam, fileKey, aesKeyHex, fileBuffer)
