@@ -49,7 +49,7 @@ export class WeixinOC extends plugin {
         const list = accounts.map((a, i) => `${i + 1}. ${a.nickname || a.user_id}\n e.user_id: wx_${a.user_id}\n Bot.uin: ${a.bot_id}`)
         const online = []
         for (const [id, bot] of adapter.bots) {
-            if (!bot._stop) online.push(`${bot.info.nickname || bot.info.user_id} \n e.user_id: wx_${bot.info.user_id}\n Bot.uin: ${id}`)
+            if (!bot._stop) online.push(`${id}:wx_${bot.info.user_id}`)
         }
 
         this.e.reply(await common.makeForwardMsg(this.e, ["已保存的账号：", ...list, "已登录的账号：", ...online, "可用指令：\n #微信个人号登录\n #微信个人号删除[序号]\n #微信个人号列表\n #微信个人号设置昵称[序号]"], this.e.msg));

@@ -130,12 +130,13 @@ class WeixinClient {
 
     const json = text ? JSON.parse(text) : {}
 
-    // 处理 iLink 特有的应用层报错
+    // 处理 iLink 特有的应用层报错，防范嵌套层级
     if (json && typeof json === 'object') {
-      const ret = json.ret ? parseInt(json.ret) : 0
-      const errcode = json.errcode ? parseInt(json.errcode) : 0
+      const ret = parseInt(json.ret ?? json.base_info?.ret ?? json.base_response?.ret ?? 0)
+      const errcode = parseInt(json.errcode ?? json.base_info?.errcode ?? json.base_response?.errcode ?? 0)
       if (ret !== 0 || errcode !== 0) {
-        throw new Error(`iLink API Error: ret=${ret}, errcode=${errcode}, errmsg=${json.errmsg || 'none'}`)
+        const errmsg = json.errmsg || json.base_info?.errmsg || json.base_response?.errmsg || 'none'
+        throw new Error(`iLink API Error: ret=${ret}, errcode=${errcode}, errmsg=${errmsg}`)
       }
     }
 
@@ -1186,6 +1187,8 @@ export const adapter = new class WeixinOCAdapter {
   async startPolling(botId) {
     const bot = Bot[botId]
     if (!bot) return
+    /** 连续错误计数，用于优化重连休眠时间 */
+    let errorCount = 0;
 
     while (Bot[botId] && !Bot[botId]._stop) {
       try {
@@ -1199,6 +1202,7 @@ export const adapter = new class WeixinOCAdapter {
             this.configSaveDebounced(account.user_id)
           }
         }
+        errorCount = 0;
 
         // 处理消息
         for (const msg of result.msgs || []) {
@@ -1206,21 +1210,45 @@ export const adapter = new class WeixinOCAdapter {
           await this.makeMessage(botId, msg)
         }
       } catch (err) {
-        // 忽略网络长轮询超时/主动截断
+        // iLink API 返回的 Token 失效校验
+        if (err.message?.includes("401") || err.message?.includes("403") || err.message?.includes("ret=100") || err.message?.includes("invalid token") || err.message?.includes("errcode=-14") || err.message?.includes("session timeout")) {
+          // 清除失效的 Token
+          const account = config.accounts.find(a => a.bot_id === botId)
+          if (account) {
+            account.token = ""
+            this.configSaveDebounced(account.user_id)
+          }
+
+          // 彻底销毁 Bot 实例
+          await this.destroyBot(botId)
+
+          // 账号下线通知
+          const eventData = {
+            self_id: botId,
+            post_type: "system",
+            notice_type: "offline",
+            sub_type: "token",
+            time: Math.floor(Date.now() / 1000),
+            message: "微信 Token 已过期或在其他设备登录，账号已下线",
+            tag: "账号下线"
+          }
+          Bot.makeLog("info", `[${eventData.self_id}] ${eventData.tag || "账号下线"}: ${err.message}`, botId)
+          Bot.sendMasterMsg(`[${eventData.self_id}] ${eventData.tag || "账号下线"}：${eventData.message}`)
+          Bot.em(`${eventData.post_type}.${eventData.notice_type}.${eventData.sub_type}`, eventData)
+
+          break
+        }
+
+        // 忽略普通的网络长轮询超时/主动截断
         if (err.message?.includes("timeout") || err.name === "AbortError") {
           continue
         }
 
-        // iLink API 返回的 Token 失效校验
-        if (err.message?.includes("401") || err.message?.includes("403") || err.message?.includes("ret=100") || err.message?.includes("invalid token")) {
-          Bot.makeLog("error", `微信 Token 已过期，需要重新登录: ${err.message}`, botId)
-          Bot[botId]._needRelogin = true
-          Bot[botId]._stop = true
-          continue
-        }
-
-        Bot.makeLog("error", `微信消息轮询错误: ${err.message}`, botId)
-        await Bot.sleep(5000)
+        // 其他网络波动异常（走自动重连逻辑）
+        errorCount++;
+        const sleepTime = Math.min(errorCount * 5000, 300000);
+        Bot.makeLog("warn", `微信消息轮询断开 (尝试第${errorCount}次重连，休眠${sleepTime / 1000}s): ${err.message}`, botId)
+        await Bot.sleep(sleepTime)
       }
     }
   }
@@ -1244,12 +1272,23 @@ export const adapter = new class WeixinOCAdapter {
     try {
       await client.getUpdates(accountConfig.sync_buf || "")
     } catch (err) {
-      if (err.message?.includes("401") || err.message?.includes("403") || err.message?.includes("ret=100")) {
-        return { needLogin: true, client, error: "Token 已过期，需要重新登录" }
+      const errorMsg = err.stack || err.message || String(err)
+      if (config.debug)
+        logger.mark(`[Token验证] 测试结果异常信息:\n${errorMsg}`)
+
+      if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("ret=100") || errorMsg.includes("invalid token") || errorMsg.includes("errcode=-14") || errorMsg.includes("session timeout")) {
+        return { needLogin: true, client, error: `Token 已过期: ${err.message}` }
+      }
+
+      if (errorMsg.includes("timeout") || err.name === "AbortError" || errorMsg.includes("ECONNRESET") || errorMsg.includes("fetch failed")) {
+        // Token 大概率是正常的，仅仅是网络阻断或长连接挂起，跳过错误让其继续创建 Bot 并由底层重连接手
+      } else {
+        // 出现其他所有非正常的 API 报错
+        return { needLogin: true, client, error: `Token 验证失败: ${err.message}` }
       }
     }
 
-    // Token 有效，创建 bot
+    // Token 有效或由于正常波动允许通行，创建 bot
     return this.createBot(accountConfig, client)
   }
 
@@ -1310,7 +1349,16 @@ export const adapter = new class WeixinOCAdapter {
       }
       if (account.token) {
         Bot.makeLog("info", `正在连接微信账号: ${account.nickname || account.user_id}`, "WeixinOC")
-        await Bot.sleep(2000, this.connect(account))
+        const result = await this.connect(account)
+
+        // 启动时发现 Token 过期，直接清除，避免出现无法响应的僵尸账号
+        if (result?.needLogin) {
+          Bot.makeLog("mark", `微信账号 [${account.nickname || account.user_id}] 登录凭证已失效，请发送 #微信个人号登录 重新扫码！(原因: ${result.error})`, "WeixinOC")
+          account.token = ""
+          needSave = true
+        } else {
+          await Bot.sleep(2000) // 错峰加载
+        }
       }
     }
     if (needSave) await configSave()
@@ -1322,7 +1370,7 @@ export const adapter = new class WeixinOCAdapter {
       Bot[botId]._stop = true
       await Bot.sleep(1000)
       this.bots.delete(botId)
-      delete Bot.bots[botId]
+      if (Bot.bots) delete Bot.bots[botId]
       delete Bot[botId]
       Bot.makeLog("mark", `${this.name} 已断开: ${botId}`, botId)
     }
