@@ -1116,6 +1116,48 @@ export const adapter = new class WeixinOCAdapter {
     }
   }
 
+  _inferSegmentType(segment) {
+    if (!segment || typeof segment !== "object") return ""
+    if (segment.type) return segment.type
+
+    const file = segment.file || segment.url || ""
+    const name = segment.name || ""
+    const source = typeof file === "string" ? file : name
+    const normalized = String(source).toLowerCase()
+
+    if (normalized.startsWith("base64://")) return "image"
+    if (normalized.startsWith("data:image/")) return "image"
+    if (/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(normalized)) return "image"
+    if (/\.(mp4|mov|m4v|webm|avi|mkv)(\?|#|$)/.test(normalized)) return "video"
+    if (/\.(mp3|wav|ogg|aac|m4a|amr|silk)(\?|#|$)/.test(normalized)) return "record"
+    if (file || name) return "file"
+    return ""
+  }
+
+  _splitMessageItemList(itemList = []) {
+    const batches = []
+    let textBatch = []
+
+    const flushTextBatch = () => {
+      if (!textBatch.length) return
+      batches.push(textBatch)
+      textBatch = []
+    }
+
+    for (const item of itemList) {
+      if (item?.type === 1) {
+        textBatch.push(item)
+        continue
+      }
+
+      flushTextBatch()
+      if (item) batches.push([item])
+    }
+
+    flushTextBatch()
+    return batches
+  }
+
   // 构建Bot发送消息项 - 标准化与 Yunzai segment 兼容
   async makeMsg(data, msg) {
     if (!Array.isArray(msg)) msg = [msg]
@@ -1127,7 +1169,7 @@ export const adapter = new class WeixinOCAdapter {
     for (let i of msg) {
       // 标准化消息格式
       if (typeof i !== "object") i = { type: "text", data: { text: i } }
-      else if (!i.data) i = { type: i.type, data: { ...i, type: undefined } }
+      else if (!i.data) i = { type: this._inferSegmentType(i), data: { ...i, type: undefined } }
 
       switch (i.type) {
         case "text":
@@ -1292,12 +1334,22 @@ export const adapter = new class WeixinOCAdapter {
 
       // 2. 发送普通消息
       if (config.debug) logger.mark("发送消息 itemList:", this._debugStringify(itemList))
-
-      const result = await Bot[botId].client.sendMessage(data.user_id.replace(/^wx_/, ""), itemList, contextToken)
+      const messageBatches = this._splitMessageItemList(itemList)
+      const sendResults = []
+      for (const batch of messageBatches) {
+        sendResults.push(
+          await Bot[botId].client.sendMessage(
+            data.user_id.replace(/^wx_/, ""),
+            batch,
+            contextToken,
+          ),
+        )
+      }
+      const result = sendResults[0] || {}
 
       // 兼容云崽加个时间戳
       result.time ??= Date.now();
-      if (config.debug) logger.mark("发送消息结果:", result)
+      if (config.debug) logger.mark("发送消息结果:", this._debugStringify(sendResults))
 
       // 3. 混合消息场景：发完普通消息后，还带有合并转发节点
       if (normalizedForward.length) {
@@ -1305,11 +1357,11 @@ export const adapter = new class WeixinOCAdapter {
         const forwardResult = await Bot.sendForwardMsg(msg => this.sendFriendMsg(data, msg), normalizedForward)
 
         // 混合消息的第一条必定是普通消息的 result，所以把 result 展开在最外层
-        return { ...result, data: { message: result, forward: forwardResult } }
+        return { ...result, data: { message: sendResults, forward: forwardResult } }
       }
 
       // 4. 只有普通消息
-      return result
+      return sendResults.length > 1 ? { ...result, data: { message: sendResults } } : result
     } catch (err) {
       Bot.makeLog("error", `发送消息失败: ${err.message}`, `${data.self_id} => ${data.user_id}`, true)
       return { error: err.message }
