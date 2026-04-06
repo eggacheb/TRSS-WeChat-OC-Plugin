@@ -1253,6 +1253,10 @@ export const adapter = new class WeixinOCAdapter {
           // 微信个人号不支持 AT 和回复功能，跳过
           continue
 
+        case "button":
+          // QQBot 兼容按钮在微信个人号侧无意义，避免被 default 分支序列化成文本发出去
+          continue
+
         case "node":
           forward.push(...this._normalizeForwardEntries(i.data, data.raw_message))
           // 转发消息，暂不支持
