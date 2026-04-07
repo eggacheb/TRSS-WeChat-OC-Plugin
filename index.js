@@ -1136,17 +1136,18 @@ export const adapter = new class WeixinOCAdapter {
 
   _splitMessageItemList(itemList = []) {
     const batches = []
-    let textBatch = []
+    let textParts = []
 
     const flushTextBatch = () => {
-      if (!textBatch.length) return
-      batches.push(textBatch)
-      textBatch = []
+      if (!textParts.length) return
+      batches.push([{ type: 1, text_item: { text: textParts.join("") } }])
+      textParts = []
     }
 
     for (const item of itemList) {
       if (item?.type === 1) {
-        textBatch.push(item)
+        const text = item.text_item?.text
+        if (typeof text === "string" && text) textParts.push(text)
         continue
       }
 
