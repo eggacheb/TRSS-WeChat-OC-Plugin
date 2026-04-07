@@ -1140,7 +1140,8 @@ export const adapter = new class WeixinOCAdapter {
 
     const flushTextBatch = () => {
       if (!textParts.length) return
-      batches.push([{ type: 1, text_item: { text: textParts.join("") } }])
+      const text = textParts.join("").trim()
+      if (text) batches.push([{ type: 1, text_item: { text } }])
       textParts = []
     }
 
@@ -1290,13 +1291,7 @@ export const adapter = new class WeixinOCAdapter {
 
     const { itemList, msgs, forward } = await this.makeMsg(data, msg)
     const normalizedForward = this._normalizeForwardEntries(forward, data.raw_message)
-
-    Bot.makeLog(
-      "info",
-      `发送好友消息：${this.makeLog(msgs)}`,
-      `${data.self_id} => ${data.user_id}`,
-      true
-    )
+    const messageBatches = this._splitMessageItemList(itemList)
 
     // 从 Redis 缓存中读取 contextToken
     const wxData = await this.getWxData(botId)
@@ -1311,7 +1306,7 @@ export const adapter = new class WeixinOCAdapter {
       return { error: "缺少上下文 contextToken ，无法发送消息。请先让对方给你发一条消息。" }
     }
 
-    if (!itemList.length && !normalizedForward.length) {
+    if (!messageBatches.length && !normalizedForward.length) {
       const reason = "empty_or_unsupported_message"
       Bot.makeLog(
         "info",
@@ -1338,8 +1333,17 @@ export const adapter = new class WeixinOCAdapter {
       }
 
       // 2. 发送普通消息
-      if (config.debug) logger.mark("发送消息 itemList:", this._debugStringify(itemList))
-      const messageBatches = this._splitMessageItemList(itemList)
+      Bot.makeLog(
+        "info",
+        `发送好友消息[最终]：${this.makeLog(messageBatches)}`,
+        `${data.self_id} => ${data.user_id}`,
+        true
+      )
+      if (config.debug) {
+        logger.mark("发送好友消息[原始] msgs:", this._debugStringify(msgs))
+        logger.mark("发送好友消息[原始] itemList:", this._debugStringify(itemList))
+        logger.mark("发送好友消息[最终] batches:", this._debugStringify(messageBatches))
+      }
       const sendResults = []
       for (const batch of messageBatches) {
         sendResults.push(
